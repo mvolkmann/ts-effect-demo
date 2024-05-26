@@ -1,19 +1,31 @@
 import {Console, Effect, Schedule} from 'effect';
-import {Schema} from '@effect/schema';
+import {Schema as S} from '@effect/schema';
 import type {ParseError} from '@effect/schema/ParseResult';
 import {HttpClient} from '@effect/platform';
 import {type BunContext, BunRuntime} from '@effect/platform-bun';
 import * as Http from '@effect/platform/HttpClient';
+import type {TimeoutException} from 'effect/Cause';
 
 const POKEMON_URL_PREFIX = 'https://pokeapi.co/api/v2/pokemon-species';
 const ROWS_PER_PAGE = 5;
 
-const Pokemon = Schema.Struct({
-  name: Schema.String,
-  url: Schema.String
+const Pokemon = S.Struct({
+  name: S.String,
+  url: S.String
 });
-type Pokemon = Schema.Schema.Type<typeof Pokemon>;
-type PokemonArray = Schema.Schema.Type<(typeof Pokemon)[]>;
+const PokemonArray = S.Array(Pokemon);
+const PokemonResponse = S.Struct({
+  count: S.Number,
+  // next: S.Union(S.String, S.Null),
+  next: S.NullOr(S.String),
+  previous: S.NullOr(S.String),
+  results: PokemonArray
+});
+
+type Pokemon = S.Schema.Type<typeof Pokemon>;
+type PokemonArray = S.Schema.Type<(typeof Pokemon)[]>;
+type PokemonResponse = S.Schema.Type<typeof PokemonResponse>;
+
 const pikachu = {
   name: 'Pikachu',
   url: 'https://pokeapi.co/api/v2/pokemon-species/1/'
@@ -36,15 +48,20 @@ async function fetchPokemonPage(page: number) {
 // success type, error type, and requirements.
 function getPokemonPage(
   page: number
-): Effect.Effect<PokemonArray, HttpClient.error.HttpClientError> {
+): Effect.Effect<
+  PokemonResponse,
+  HttpClient.error.HttpClientError | ParseError | TimeoutException
+> {
   const offset = (page - 1) * ROWS_PER_PAGE;
   const url = POKEMON_URL_PREFIX + `?offset=${offset}&limit=${ROWS_PER_PAGE}`;
-  Effect.timeout('1 seconds');
-  Effect.retry({times: 3});
   return Http.request.get(url).pipe(
     // Effect.catchTag('ParseError', () => Effect.succeed(pikachu)),
     Http.client.fetch,
-    Http.response.json
+    // Http.response.json
+    Effect.andThen(Http.response.schemaBodyJson(PokemonResponse)),
+    Effect.scoped,
+    Effect.timeout('1 seconds'),
+    Effect.retry({times: 3})
   );
   // Using the exponential backoff retry strategy.
   // return Effect.retry(Schedule.exponential(1000).pipe(Schedule.compose(Schedule.recurs(3)));
